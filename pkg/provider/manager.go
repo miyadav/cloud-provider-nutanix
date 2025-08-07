@@ -280,6 +280,9 @@ func (n *nutanixManager) isNodeShutdown(ctx context.Context, node *v1.Node) (boo
 }
 
 func (n *nutanixManager) isVMShutdown(vm *vmmModels.Vm) bool {
+	if vm == nil || vm.PowerState == nil {
+		return false
+	}
 	return *vm.PowerState == vmmModels.POWERSTATE_OFF
 }
 
@@ -326,7 +329,9 @@ func (n *nutanixManager) isNodeAddressesSet(node *v1.Node) bool {
 	if node == nil {
 		return false
 	}
-
+	if node.Status.Addresses == nil {
+		return false
+	}
 	var hasHostname, hasInternalIP bool
 	for _, address := range node.Status.Addresses {
 		if address.Type == v1.NodeHostName {
@@ -349,6 +354,10 @@ func (n *nutanixManager) getNodeAddresses(_ context.Context, vm *vmmModels.Vm) (
 
 	if vm == nil {
 		return nil, fmt.Errorf("vm cannot be nil when getting node addresses")
+	}
+
+	if vm.ExtId == nil {
+		return nil, fmt.Errorf("unable to determine network interfaces from VM: missing UUID")
 	}
 
 	if len(vm.Nics) == 0 {
@@ -389,7 +398,9 @@ func (n *nutanixManager) getNodeAddresses(_ context.Context, vm *vmmModels.Vm) (
 	if len(addresses) == 0 {
 		return addresses, fmt.Errorf("unable to determine network interfaces from VM with UUID %s", *vm.ExtId)
 	}
-
+	if vm.Name == nil {
+		return addresses, fmt.Errorf("vm name is nil")
+	}
 	addresses = append(addresses, v1.NodeAddress{
 		Type:    v1.NodeHostName,
 		Address: *vm.Name,
@@ -480,6 +491,9 @@ func (n *nutanixManager) getTopologyInfoUsingPrism(ctx context.Context, nClient 
 	}
 
 	if vm.Cluster == nil || vm.Cluster.ExtId == nil || *vm.Cluster.ExtId == "" {
+		if vm.ExtId == nil {
+			return ti, fmt.Errorf("cannot determine Prism zone information for vm")
+		}
 		return ti, fmt.Errorf("cannot determine Prism zone information for vm %s", *vm.ExtId)
 	}
 
@@ -487,10 +501,16 @@ func (n *nutanixManager) getTopologyInfoUsingPrism(ctx context.Context, nClient 
 	if err != nil {
 		return ti, err
 	}
+	if pc == nil || pc.Name == nil {
+		return ti, fmt.Errorf("prism central cluster or its name is nil")
+	}
 
 	cluster, err := nClient.GetCluster(ctx, *vm.Cluster.ExtId)
 	if err != nil {
 		return ti, err
+	}
+	if cluster == nil || cluster.Name == nil {
+		return ti, fmt.Errorf("cluster or cluster name is nil")
 	}
 
 	ti.Region = *pc.Name
@@ -502,6 +522,9 @@ func (n *nutanixManager) getTopologyInfoUsingCategories(ctx context.Context, nut
 	tc := &config.TopologyInfo{}
 	if vm == nil {
 		return *tc, fmt.Errorf("vm cannot be nil while getting topology info")
+	}
+	if vm.Name == nil {
+		return *tc, fmt.Errorf("vm name is nil while getting topology info")
 	}
 	klog.V(1).Infof("searching for topology info on VM entity: %s", *vm.Name) //nolint:typecheck
 	err := n.getTopologyInfoFromVM(ctx, nutanixClient, vm, tc)
@@ -533,6 +556,9 @@ func (n *nutanixManager) getZoneInfoFromCategories(ctx context.Context, nClient 
 		category, err := nClient.GetCategory(ctx, categoryUUID)
 		if err != nil {
 			return err
+		}
+		if category == nil || category.Key == nil || category.Value == nil {
+			continue
 		}
 		if _, ok := prismCategories[*category.Key]; !ok {
 			prismCategories[*category.Key] = []string{}
@@ -582,10 +608,16 @@ func (n *nutanixManager) getTopologyInfoFromCluster(ctx context.Context, nClient
 	if ti == nil {
 		return fmt.Errorf("topology categories cannot be nil when searching for topology info")
 	}
+	if vm.Cluster == nil || vm.Cluster.ExtId == nil {
+		return fmt.Errorf("vm cluster or cluster ExtId is nil")
+	}
 	clusterUUID := *vm.Cluster.ExtId
 	cluster, err := nClient.GetCluster(ctx, clusterUUID)
 	if err != nil {
 		return fmt.Errorf("error occurred while searching for topology info on cluster: %v", err)
+	}
+	if cluster == nil {
+		return fmt.Errorf("cluster is nil")
 	}
 	if err = n.getZoneInfoFromCategories(ctx, nClient, cluster.Categories, ti); err != nil {
 		return err
@@ -650,7 +682,7 @@ func (n *nutanixManager) getPrismCentralCluster(ctx context.Context, nClient int
 }
 
 func (n *nutanixManager) hasPEClusterServiceEnabled(cluster *clusterModels.Cluster, serviceType clusterModels.SoftwareTypeRef) bool {
-	if cluster == nil {
+	if cluster == nil || cluster.Config == nil {
 		return false
 	}
 	serviceList := cluster.Config.ClusterSoftwareMap
